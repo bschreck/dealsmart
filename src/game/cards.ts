@@ -1,5 +1,5 @@
 // ============================================================
-// Monopoly Deal - Complete Card Definitions (106 playable cards)
+// Monopoly Deal - Complete Card Definitions (108 playable cards)
 // ============================================================
 
 import {
