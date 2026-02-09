@@ -264,9 +264,9 @@ export async function getAIDecision(
 
   // Load memory
   const agentId = player.aiPersonality || 'default';
-  let memory = loadAgentMemory(agentId);
+  let memory = await loadAgentMemory(agentId);
   if (!memory) {
-    memory = createDefaultAgent(agentId, player.name, agentId);
+    memory = await createDefaultAgent(agentId, player.name, agentId);
   }
 
   const opponentIds = view.opponents.map(o => o.id);
@@ -362,7 +362,7 @@ export async function updateMemoryAfterGame(
 ): Promise<void> {
   const player = state.players.find(p => p.id === agentPlayerId)!;
   const agentId = player.aiPersonality || 'default';
-  let memory = loadAgentMemory(agentId);
+  let memory = await loadAgentMemory(agentId);
   if (!memory) return;
 
   const won = state.winner === agentPlayerId;
@@ -371,7 +371,7 @@ export async function updateMemoryAfterGame(
   memory.profile.gamesPlayed++;
   if (won) memory.profile.wins++;
   memory.profile.updatedAt = new Date().toISOString();
-  saveAgentProfile(agentId, memory.profile);
+  await saveAgentProfile(agentId, memory.profile);
 
   // Save game record
   const record: GameRecord = {
@@ -433,7 +433,7 @@ Reflect on this game. Respond with JSON:
             existing.observedTendencies = existing.observedTendencies.slice(-10);
           }
           existing.lastUpdated = new Date().toISOString();
-          saveOpponentModel(agentId, existing);
+          await saveOpponentModel(agentId, existing);
         } else {
           const opponent = state.players.find(p => p.id === obs.playerId);
           if (opponent) {
@@ -447,7 +447,7 @@ Reflect on this game. Respond with JSON:
               lastUpdated: new Date().toISOString(),
             };
             memory.opponentModels[obs.playerId] = newModel;
-            saveOpponentModel(agentId, newModel);
+            await saveOpponentModel(agentId, newModel);
           }
         }
       }
@@ -475,18 +475,18 @@ Reflect on this game. Respond with JSON:
             });
           }
         }
-        saveStrategicInsights(agentId, memory.strategicInsights);
+        await saveStrategicInsights(agentId, memory.strategicInsights);
       }
 
       // Update base strategy if suggested
       if (reflection.strategyUpdate && reflection.strategyUpdate !== 'null') {
         memory.profile.baseStrategy += '\n\n## Learned Update\n' + reflection.strategyUpdate;
-        saveAgentProfile(agentId, memory.profile);
+        await saveAgentProfile(agentId, memory.profile);
       }
     }
   } catch (error) {
     console.error('Memory reflection error:', error);
   }
 
-  saveGameRecord(agentId, record);
+  await saveGameRecord(agentId, record);
 }

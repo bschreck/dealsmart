@@ -252,27 +252,27 @@ describe('memory manager', () => {
   });
 
   describe('createDefaultAgent', () => {
-    it('creates aggressive agent with attack-oriented strategy', () => {
-      const memory = createDefaultAgent('test_agg', 'Aggro', 'aggressive');
+    it('creates aggressive agent with attack-oriented strategy', async () => {
+      const memory = await createDefaultAgent('test_agg', 'Aggro', 'aggressive');
       expect(memory.profile.personality).toBe('aggressive');
       expect(memory.profile.baseStrategy).toContain('aggressively');
       expect(memory.profile.gamesPlayed).toBe(0);
     });
 
-    it('creates defensive agent with bank-first strategy', () => {
-      const memory = createDefaultAgent('test_def', 'Defender', 'defensive');
+    it('creates defensive agent with bank-first strategy', async () => {
+      const memory = await createDefaultAgent('test_def', 'Defender', 'defensive');
       expect(memory.profile.personality).toBe('defensive');
       expect(memory.profile.baseStrategy).toContain('defensively');
     });
 
-    it('creates balanced agent with adaptive strategy', () => {
-      const memory = createDefaultAgent('test_bal', 'Balanced', 'balanced');
+    it('creates balanced agent with adaptive strategy', async () => {
+      const memory = await createDefaultAgent('test_bal', 'Balanced', 'balanced');
       expect(memory.profile.personality).toBe('balanced');
       expect(memory.profile.baseStrategy).toContain('Balanced');
     });
 
-    it('starts with empty opponent models and insights', () => {
-      const memory = createDefaultAgent('test_empty', 'Bot', 'balanced');
+    it('starts with empty opponent models and insights', async () => {
+      const memory = await createDefaultAgent('test_empty', 'Bot', 'balanced');
       expect(Object.keys(memory.opponentModels)).toHaveLength(0);
       expect(memory.recentGames).toHaveLength(0);
       expect(memory.strategicInsights).toHaveLength(0);

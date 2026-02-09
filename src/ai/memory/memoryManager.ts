@@ -10,10 +10,14 @@
 // 1. Core Memory: Agent identity, base strategy (always loaded)
 // 2. Opponent Models: Per-opponent tendencies (loaded per game)
 // 3. Strategic Insights: Learned patterns from past games
+//
+// Storage: Neon Postgres when DATABASE_URL is set,
+// falls back to filesystem for local dev/tests.
 // ============================================================
 
 import fs from 'fs';
 import path from 'path';
+import { eq, and, desc } from 'drizzle-orm';
 
 const MEMORY_DIR = path.join(process.cwd(), 'data', 'memory');
 
@@ -67,6 +71,18 @@ export interface AgentMemory {
   strategicInsights: StrategicInsight[];
 }
 
+// ============================================================
+// Storage Backend Detection
+// ============================================================
+
+function hasDatabase(): boolean {
+  return !!process.env.DATABASE_URL;
+}
+
+// ============================================================
+// Filesystem Helpers (fallback for local dev/tests)
+// ============================================================
+
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -77,7 +93,7 @@ function agentDir(agentId: string): string {
   return path.join(MEMORY_DIR, agentId);
 }
 
-export function loadAgentMemory(agentId: string): AgentMemory | null {
+function fsLoadAgentMemory(agentId: string): AgentMemory | null {
   const dir = agentDir(agentId);
   const profilePath = path.join(dir, 'profile.json');
 
@@ -101,7 +117,7 @@ export function loadAgentMemory(agentId: string): AgentMemory | null {
     const gamesPath = path.join(dir, 'games.json');
     if (fs.existsSync(gamesPath)) {
       const allGames: GameRecord[] = JSON.parse(fs.readFileSync(gamesPath, 'utf-8'));
-      recentGames = allGames.slice(-20); // Keep last 20 games
+      recentGames = allGames.slice(-20);
     }
 
     let strategicInsights: StrategicInsight[] = [];
@@ -116,19 +132,19 @@ export function loadAgentMemory(agentId: string): AgentMemory | null {
   }
 }
 
-export function saveAgentProfile(agentId: string, profile: AgentProfile): void {
+function fsSaveAgentProfile(agentId: string, profile: AgentProfile): void {
   const dir = agentDir(agentId);
   ensureDir(dir);
   fs.writeFileSync(path.join(dir, 'profile.json'), JSON.stringify(profile, null, 2));
 }
 
-export function saveOpponentModel(agentId: string, model: OpponentModel): void {
+function fsSaveOpponentModel(agentId: string, model: OpponentModel): void {
   const dir = path.join(agentDir(agentId), 'opponents');
   ensureDir(dir);
   fs.writeFileSync(path.join(dir, `${model.opponentId}.json`), JSON.stringify(model, null, 2));
 }
 
-export function saveGameRecord(agentId: string, record: GameRecord): void {
+function fsSaveGameRecord(agentId: string, record: GameRecord): void {
   const dir = agentDir(agentId);
   ensureDir(dir);
   const gamesPath = path.join(dir, 'games.json');
@@ -138,26 +154,249 @@ export function saveGameRecord(agentId: string, record: GameRecord): void {
     games = JSON.parse(fs.readFileSync(gamesPath, 'utf-8'));
   }
   games.push(record);
-
-  // Keep only last 100 games to prevent unbounded growth
   if (games.length > 100) {
     games = games.slice(-100);
   }
-
   fs.writeFileSync(gamesPath, JSON.stringify(games, null, 2));
 }
 
-export function saveStrategicInsights(agentId: string, insights: StrategicInsight[]): void {
+function fsSaveStrategicInsights(agentId: string, insights: StrategicInsight[]): void {
   const dir = agentDir(agentId);
   ensureDir(dir);
-  // Prune low-confidence, highly contradicted insights
   const filtered = insights.filter(i =>
     i.confidence > 0.2 || i.timesValidated > i.timesContradicted
   );
   fs.writeFileSync(path.join(dir, 'insights.json'), JSON.stringify(filtered, null, 2));
 }
 
-export function createDefaultAgent(agentId: string, name: string, personality: string): AgentMemory {
+// ============================================================
+// Database Helpers (Neon Postgres)
+// ============================================================
+
+async function dbLoadAgentMemory(agentId: string): Promise<AgentMemory | null> {
+  const { getDb } = await import('../../db/drizzle');
+  const schema = await import('../../db/schema');
+  const db = getDb();
+
+  const profiles = await db.select().from(schema.agentProfiles).where(eq(schema.agentProfiles.id, agentId)).limit(1);
+  if (profiles.length === 0) return null;
+
+  const row = profiles[0];
+  const profile: AgentProfile = {
+    id: row.id,
+    name: row.name,
+    personality: row.personality,
+    baseStrategy: row.baseStrategy,
+    gamesPlayed: row.gamesPlayed,
+    wins: row.wins,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+
+  // Load opponent models
+  const oppRows = await db.select().from(schema.opponentModels).where(eq(schema.opponentModels.agentId, agentId));
+  const opponentModels: Record<string, OpponentModel> = {};
+  for (const opp of oppRows) {
+    opponentModels[opp.opponentId] = {
+      opponentId: opp.opponentId,
+      opponentName: opp.opponentName,
+      gamesAgainst: opp.gamesAgainst,
+      winsAgainst: opp.winsAgainst,
+      observedTendencies: opp.observedTendencies ?? [],
+      strategicNotes: opp.strategicNotes ?? [],
+      lastUpdated: opp.lastUpdated.toISOString(),
+    };
+  }
+
+  // Load recent games (last 20)
+  const gameRows = await db.select().from(schema.gameRecords)
+    .where(eq(schema.gameRecords.agentId, agentId))
+    .orderBy(desc(schema.gameRecords.date))
+    .limit(20);
+  const recentGames: GameRecord[] = gameRows.reverse().map(g => ({
+    gameId: g.gameId,
+    date: g.date.toISOString(),
+    players: g.players ?? [],
+    winner: g.winner,
+    turnCount: g.turnCount,
+    keyDecisions: g.keyDecisions ?? [],
+    lessonsLearned: g.lessonsLearned ?? [],
+    opponentBehaviors: g.opponentBehaviors ?? [],
+  }));
+
+  // Load strategic insights
+  const insightRows = await db.select().from(schema.strategicInsights)
+    .where(eq(schema.strategicInsights.agentId, agentId));
+  const strategicInsights: StrategicInsight[] = insightRows.map(i => ({
+    id: i.id,
+    insight: i.insight,
+    confidence: i.confidence,
+    timesValidated: i.timesValidated,
+    timesContradicted: i.timesContradicted,
+    context: i.context,
+    createdAt: i.createdAt.toISOString(),
+    updatedAt: i.updatedAt.toISOString(),
+  }));
+
+  return { profile, opponentModels, recentGames, strategicInsights };
+}
+
+async function dbSaveAgentProfile(agentId: string, profile: AgentProfile): Promise<void> {
+  const { getDb } = await import('../../db/drizzle');
+  const schema = await import('../../db/schema');
+  const db = getDb();
+
+  await db
+    .insert(schema.agentProfiles)
+    .values({
+      id: agentId,
+      name: profile.name,
+      personality: profile.personality,
+      baseStrategy: profile.baseStrategy,
+      gamesPlayed: profile.gamesPlayed,
+      wins: profile.wins,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: schema.agentProfiles.id,
+      set: {
+        name: profile.name,
+        baseStrategy: profile.baseStrategy,
+        gamesPlayed: profile.gamesPlayed,
+        wins: profile.wins,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+async function dbSaveOpponentModel(agentId: string, model: OpponentModel): Promise<void> {
+  const { getDb } = await import('../../db/drizzle');
+  const schema = await import('../../db/schema');
+  const db = getDb();
+
+  // Check if exists
+  const existing = await db.select().from(schema.opponentModels)
+    .where(and(
+      eq(schema.opponentModels.agentId, agentId),
+      eq(schema.opponentModels.opponentId, model.opponentId),
+    ))
+    .limit(1);
+
+  if (existing.length > 0) {
+    await db.update(schema.opponentModels)
+      .set({
+        opponentName: model.opponentName,
+        gamesAgainst: model.gamesAgainst,
+        winsAgainst: model.winsAgainst,
+        observedTendencies: model.observedTendencies,
+        strategicNotes: model.strategicNotes,
+        lastUpdated: new Date(),
+      })
+      .where(and(
+        eq(schema.opponentModels.agentId, agentId),
+        eq(schema.opponentModels.opponentId, model.opponentId),
+      ));
+  } else {
+    await db.insert(schema.opponentModels).values({
+      agentId,
+      opponentId: model.opponentId,
+      opponentName: model.opponentName,
+      gamesAgainst: model.gamesAgainst,
+      winsAgainst: model.winsAgainst,
+      observedTendencies: model.observedTendencies,
+      strategicNotes: model.strategicNotes,
+    });
+  }
+}
+
+async function dbSaveGameRecord(agentId: string, record: GameRecord): Promise<void> {
+  const { getDb } = await import('../../db/drizzle');
+  const schema = await import('../../db/schema');
+  const db = getDb();
+
+  await db.insert(schema.gameRecords).values({
+    agentId,
+    gameId: record.gameId,
+    date: new Date(record.date),
+    players: record.players,
+    winner: record.winner,
+    turnCount: record.turnCount,
+    keyDecisions: record.keyDecisions,
+    lessonsLearned: record.lessonsLearned,
+    opponentBehaviors: record.opponentBehaviors,
+  });
+}
+
+async function dbSaveStrategicInsights(agentId: string, insights: StrategicInsight[]): Promise<void> {
+  const { getDb } = await import('../../db/drizzle');
+  const schema = await import('../../db/schema');
+  const db = getDb();
+
+  const filtered = insights.filter(i =>
+    i.confidence > 0.2 || i.timesValidated > i.timesContradicted
+  );
+
+  // Delete existing insights for this agent
+  await db.delete(schema.strategicInsights).where(eq(schema.strategicInsights.agentId, agentId));
+
+  // Insert updated insights
+  if (filtered.length > 0) {
+    await db.insert(schema.strategicInsights).values(
+      filtered.map(i => ({
+        id: i.id,
+        agentId,
+        insight: i.insight,
+        confidence: i.confidence,
+        timesValidated: i.timesValidated,
+        timesContradicted: i.timesContradicted,
+        context: i.context,
+        createdAt: new Date(i.createdAt),
+        updatedAt: new Date(i.updatedAt),
+      }))
+    );
+  }
+}
+
+// ============================================================
+// Public API (delegates to DB or filesystem)
+// ============================================================
+
+export async function loadAgentMemory(agentId: string): Promise<AgentMemory | null> {
+  if (hasDatabase()) {
+    return dbLoadAgentMemory(agentId);
+  }
+  return fsLoadAgentMemory(agentId);
+}
+
+export async function saveAgentProfile(agentId: string, profile: AgentProfile): Promise<void> {
+  if (hasDatabase()) {
+    return dbSaveAgentProfile(agentId, profile);
+  }
+  fsSaveAgentProfile(agentId, profile);
+}
+
+export async function saveOpponentModel(agentId: string, model: OpponentModel): Promise<void> {
+  if (hasDatabase()) {
+    return dbSaveOpponentModel(agentId, model);
+  }
+  fsSaveOpponentModel(agentId, model);
+}
+
+export async function saveGameRecord(agentId: string, record: GameRecord): Promise<void> {
+  if (hasDatabase()) {
+    return dbSaveGameRecord(agentId, record);
+  }
+  fsSaveGameRecord(agentId, record);
+}
+
+export async function saveStrategicInsights(agentId: string, insights: StrategicInsight[]): Promise<void> {
+  if (hasDatabase()) {
+    return dbSaveStrategicInsights(agentId, insights);
+  }
+  fsSaveStrategicInsights(agentId, insights);
+}
+
+export async function createDefaultAgent(agentId: string, name: string, personality: string): Promise<AgentMemory> {
   const profile: AgentProfile = {
     id: agentId,
     name,
@@ -169,7 +408,7 @@ export function createDefaultAgent(agentId: string, name: string, personality: s
     updatedAt: new Date().toISOString(),
   };
 
-  saveAgentProfile(agentId, profile);
+  await saveAgentProfile(agentId, profile);
 
   return {
     profile,

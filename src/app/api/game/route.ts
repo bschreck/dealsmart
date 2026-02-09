@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createGame, startGame, getPlayerView, PlayerConfig } from '@/game/engine';
 import { createDefaultAgent, loadAgentMemory } from '@/ai/memory/memoryManager';
-import { games } from '@/game/store';
+import { getGame, saveGame } from '@/game/store';
 
 export async function POST(request: NextRequest) {
   try {
@@ -27,15 +27,15 @@ export async function POST(request: NextRequest) {
       configs.push({ name, isAI: true, aiPersonality: personality });
 
       // Ensure AI agent memory exists
-      const memory = loadAgentMemory(personality);
+      const memory = await loadAgentMemory(personality);
       if (!memory) {
-        createDefaultAgent(personality, name, personality);
+        await createDefaultAgent(personality, name, personality);
       }
     }
 
     let state = createGame(configs);
     state = startGame(state);
-    games.set(state.id, state);
+    await saveGame(state.id, state);
 
     const view = getPlayerView(state, 'player_0');
 
@@ -57,7 +57,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Game ID required' }, { status: 400 });
   }
 
-  const state = games.get(gameId);
+  const state = await getGame(gameId);
   if (!state) {
     return NextResponse.json({ error: 'Game not found' }, { status: 404 });
   }

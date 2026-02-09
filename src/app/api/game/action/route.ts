@@ -4,10 +4,10 @@
 // ============================================================
 
 import { NextRequest, NextResponse } from 'next/server';
-import { applyAction, getPlayerView, getLegalActions, isSetComplete } from '@/game/engine';
+import { applyAction, getPlayerView, getLegalActions } from '@/game/engine';
 import { GameState, PlayerAction } from '@/game/types';
 import { getAIDecision, updateMemoryAfterGame } from '@/ai/aiPlayer';
-import { games } from '@/game/store';
+import { getGame, saveGame } from '@/game/store';
 import { autoSelectPayment } from '@/game/engine';
 
 async function processAITurns(state: GameState): Promise<GameState> {
@@ -104,7 +104,7 @@ export async function POST(request: NextRequest) {
       action: PlayerAction;
     };
 
-    let state = games.get(gameId);
+    let state = await getGame(gameId);
     if (!state) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 });
     }
@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
     state = await processAITurns(state);
 
     // Update game store
-    games.set(gameId, state);
+    await saveGame(gameId, state);
 
     // If game over, update AI memories
     if (state.winner) {
